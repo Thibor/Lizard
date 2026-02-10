@@ -281,26 +281,6 @@ int pawn_rank[2][10];
 int piece_mat[2];  /* the value of a side's pieces */
 int pawn_mat[2];  /* the value of a side's pawns */
 
-int hash_rand();
-void set_hash();
-BOOL in_check(int s);
-BOOL attack(int sq, int s);
-void gen();
-void gen_caps();
-void gen_push(int from, int to, int bits);
-void gen_promote(int from, int to, int bits);
-int reps();
-void sort_pv();
-void sort(int from);
-int CheckUp();
-int eval();
-int eval_light_pawn(int sq);
-int eval_dark_pawn(int sq);
-int eval_light_king(int sq);
-int eval_lkp(int f);
-int eval_dark_king(int sq);
-int eval_dkp(int f);
-
 U64 GetTimeMs() {
 #ifdef WIN32
 	return GetTickCount64();
@@ -705,15 +685,6 @@ void SetFen(const char* s)
 	}
 }
 
-void InitBoard(const char* s){
-	SetFen(s);
-	fifty = 0;
-	ply = 0;
-	hply = 0;
-	set_hash();  /* init_hash() must be called before this function */
-	first_move[0] = 0;
-}
-
 //hash_rand() XORs some shifted random numbers together to make sure we have good coverage of all 32 bits. (rand() returns 16-bit numbers on some systems.)
 int hash_rand()
 {
@@ -740,19 +711,7 @@ void InitHash()
 		hash_ep[i] = hash_rand();
 }
 
-
-/* set_hash() uses the Zobrist method of generating a unique number (hash)
-   for the current chess position. Of course, there are many more chess
-   positions than there are 32 bit numbers, so the numbers generated are
-   not really unique, but they're unique enough for our purposes (to detect
-   repetitions of the position).
-   The way it works is to XOR random numbers that correspond to features of
-   the position, e.g., if there's a black knight on B8, hash is XORed with
-   hash_piece[BLACK][KNIGHT][B8]. All of the pieces are XORed together,
-   hash_side is XORed if it's black's move, and the en passant square is
-   XORed if there is one. (A chess technicality is that one position can't
-   be a repetition of another if the en passant state is different.) */
-void set_hash(){
+void GetHash(){
 	int i;
 	hash = 0;
 	for (i = 0; i < 64; ++i)
@@ -764,10 +723,15 @@ void set_hash(){
 		hash ^= hash_ep[ep];
 }
 
+void InitBoard(const char* s) {
+	SetFen(s);
+	fifty = 0;
+	ply = 0;
+	hply = 0;
+	GetHash();
+	first_move[0] = 0;
+}
 
-/* in_check() returns TRUE if side s is in check and FALSE
-   otherwise. It just scans the board to find side s's king
-   and calls attack() to see if it's being attacked. */
 BOOL in_check(int s)
 {
 	int i;
@@ -815,6 +779,50 @@ BOOL attack(int sq, int s)
 					}
 		}
 	return FALSE;
+}
+
+//gen_promote() is just like gen_push(), only it puts 4 moves on the move stack, one for each possible promotion piece
+void gen_promote(int from, int to, int bits) {
+	int i;
+	VMove* g;
+
+	for (i = KNIGHT; i <= QUEEN; ++i) {
+		g = &gen_dat[first_move[ply + 1]++];
+		g->um.sm.from = (char)from;
+		g->um.sm.to = (char)to;
+		g->um.sm.promote = (char)i;
+		g->um.sm.bits = (char)(bits | 32);
+		g->value = 1000000 + (i * 10);
+	}
+}
+
+void gen_push(int from, int to, int bits)
+{
+	VMove* g;
+
+	if (bits & 16) {
+		if (side == LIGHT) {
+			if (to <= H8) {
+				gen_promote(from, to, bits);
+				return;
+			}
+		}
+		else {
+			if (to >= A1) {
+				gen_promote(from, to, bits);
+				return;
+			}
+		}
+	}
+	g = &gen_dat[first_move[ply + 1]++];
+	g->um.sm.from = (char)from;
+	g->um.sm.to = (char)to;
+	g->um.sm.promote = 0;
+	g->um.sm.bits = (char)bits;
+	if (color[to] != EMPTY)
+		g->value = 1000000 + (piece[to] * 10) - piece[from];
+	else
+		g->value = history[from][to];
 }
 
 
@@ -961,59 +969,6 @@ void gen_caps()
 			if (COL(ep) != 7 && color[ep - 7] == DARK && piece[ep - 7] == PAWN)
 				gen_push(ep - 7, ep, 21);
 		}
-	}
-}
-
-
-/* gen_push() puts a move on the move stack, unless it's a
-   pawn promotion that needs to be handled by gen_promote().
-   It also assigns a score to the move for alpha-beta move
-   ordering. If the move is a capture, it uses MVV/LVA
-   (Most Valuable Victim/Least Valuable Attacker). Otherwise,
-   it uses the move's history heuristic value. Note that
-   1,000,000 is added to a capture move's score, so it
-   always gets ordered above a "normal" move. */
-void gen_push(int from, int to, int bits)
-{
-	VMove* g;
-
-	if (bits & 16) {
-		if (side == LIGHT) {
-			if (to <= H8) {
-				gen_promote(from, to, bits);
-				return;
-			}
-		}
-		else {
-			if (to >= A1) {
-				gen_promote(from, to, bits);
-				return;
-			}
-		}
-	}
-	g = &gen_dat[first_move[ply + 1]++];
-	g->um.sm.from = (char)from;
-	g->um.sm.to = (char)to;
-	g->um.sm.promote = 0;
-	g->um.sm.bits = (char)bits;
-	if (color[to] != EMPTY)
-		g->value = 1000000 + (piece[to] * 10) - piece[from];
-	else
-		g->value = history[from][to];
-}
-
-//gen_promote() is just like gen_push(), only it puts 4 moves on the move stack, one for each possible promotion piece
-void gen_promote(int from, int to, int bits){
-	int i;
-	VMove* g;
-
-	for (i = KNIGHT; i <= QUEEN; ++i) {
-		g = &gen_dat[first_move[ply + 1]++];
-		g->um.sm.from = (char)from;
-		g->um.sm.to = (char)to;
-		g->um.sm.promote = (char)i;
-		g->um.sm.bits = (char)(bits | 32);
-		g->value = 1000000 + (i * 10);
 	}
 }
 
@@ -1191,7 +1146,7 @@ BOOL makemove(SMove um){
 		takeback();
 		return FALSE;
 	}
-	set_hash();
+	GetHash();
 	return TRUE;
 }
 
@@ -1275,12 +1230,39 @@ int CheckUp() {
 	return info.stop;
 }
 
-/* quiesce() is a recursive minimax search function with
-   alpha-beta cutoffs. In other words, negamax. It basically
-   only searches capture sequences and allows the evaluation
-   function to cut the search off (and set alpha). The idea
-   is to find a position where there isn't a lot going on
-   so the static evaluation function will work. */
+void sort_pv()
+{
+	int i;
+
+	follow_pv = FALSE;
+	for (i = first_move[ply]; i < first_move[ply + 1]; ++i)
+		if (gen_dat[i].um.u == pv[0][ply].u) {
+			follow_pv = TRUE;
+			gen_dat[i].value += 10000000;
+			return;
+		}
+}
+
+//searches the current ply's move list from 'from' to the end to find the move with the highest score
+void sort(int from)
+{
+	int i;
+	int bs;  /* best score */
+	int bi;  /* best i */
+	VMove g;
+
+	bs = -1;
+	bi = from;
+	for (i = from; i < first_move[ply + 1]; ++i)
+		if (gen_dat[i].value > bs) {
+			bs = gen_dat[i].value;
+			bi = i;
+		}
+	g = gen_dat[from];
+	gen_dat[from] = gen_dat[bi];
+	gen_dat[bi] = g;
+}
+
 int SearchQuiescence(int alpha, int beta){
 	int i, j, value;
 	if (CheckUp())
@@ -1475,47 +1457,6 @@ int reps() {
 		if (hist_dat[i].hash == hash)
 			++r;
 	return r;
-}
-
-
-/* sort_pv() is called when the search function is following
-   the PV (Principal Variation). It looks through the current
-   ply's move list to see if the PV move is there. If so,
-   it adds 10,000,000 to the move's score so it's played first
-   by the search function. If not, follow_pv remains FALSE and
-   search() stops calling sort_pv(). */
-void sort_pv()
-{
-	int i;
-
-	follow_pv = FALSE;
-	for (i = first_move[ply]; i < first_move[ply + 1]; ++i)
-		if (gen_dat[i].um.u == pv[0][ply].u) {
-			follow_pv = TRUE;
-			gen_dat[i].value += 10000000;
-			return;
-		}
-}
-
-
-//searches the current ply's move list from 'from' to the end to find the move with the highest score
-void sort(int from)
-{
-	int i;
-	int bs;  /* best score */
-	int bi;  /* best i */
-	VMove g;
-
-	bs = -1;
-	bi = from;
-	for (i = from; i < first_move[ply + 1]; ++i)
-		if (gen_dat[i].value > bs) {
-			bs = gen_dat[i].value;
-			bi = i;
-		}
-	g = gen_dat[from];
-	gen_dat[from] = gen_dat[bi];
-	gen_dat[bi] = g;
 }
 
 //prints the board
