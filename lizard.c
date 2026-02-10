@@ -1641,23 +1641,23 @@ static void ParseGo(char* ptr) {
 static void UciCommand(char* command) {
 	char token[80], * ptr;
 	ptr = ParseToken(command, token);
-	if (strcmp(token, "ucinewgame") == 0) {}
-	else if (strcmp(token, "uci") == 0) {
+	if (strncmp(token, "ucinewgame",10) == 0) {}
+	else if (strncmp(token, "uci",3) == 0) {
 		printf("id name %s\n", NAME);
 		printf("uciok\n");
 		fflush(stdout);
 	}
-	else if (strcmp(token, "isready") == 0) {
+	else if (strncmp(token, "isready",7) == 0) {
 		printf("readyok\n");
 		fflush(stdout);
 	}
-	else if (strcmp(token, "position") == 0)
+	else if (strncmp(token, "position",8) == 0)
 		ParsePosition(ptr);
-	else if (strcmp(token, "go") == 0)
+	else if (strncmp(token, "go",2) == 0)
 		ParseGo(ptr);
-	else if (strcmp(token, "quit") == 0)
+	else if (strncmp(token, "quit",4) == 0)
 		exit(0);
-	else if (strcmp(token, "print") == 0)
+	else if (strncmp(token, "print",5) == 0)
 		PrintBoard();
 }
 
