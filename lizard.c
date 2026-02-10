@@ -1334,7 +1334,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	   to pick a move and can't simply return 0) then check to
 	   see if the position is a repeat. if so, we can assume that
 	   this line is a draw and return 0. */
-	if (ply && reps())
+	if (ply && Reps())
 		return 0;
 
 	/* are we too deep? */
@@ -1449,11 +1449,10 @@ void SearchIterate()
 }
 
 
-//reps() returns the number of times the current position has been repeated. It compares the current value of hash to previous values
-int reps() {
-	int i;
+//returns the number of times the current position has been repeated
+int Reps() {
 	int r = 0;
-	for (i = hply - fifty; i < hply; ++i)
+	for (int i = hply - fifty; i < hply; ++i)
 		if (hist_dat[i].hash == hash)
 			++r;
 	return r;
