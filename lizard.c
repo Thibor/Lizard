@@ -107,10 +107,8 @@ int castle;  /* a bitfield with the castle permissions. if 1 is set,
 int ep;  /* the en passant square. if white moves e2e4, the en passant
 			square is set to e3, because that's where a pawn would move
 			in an en passant capture */
-int fifty;  /* the number of moves since a capture or pawn move, used
-			   to handle the fifty-move-draw rule */
-int hash;  /* a (more or less) unique number that corresponds to the
-			  position */
+int fifty;//the number of moves since a capture or pawn move, used to handle the fifty-move-draw rule
+U64 hash;//a (more or less) unique number that corresponds to the position
 int ply;//the number of half-moves (ply) since the root of the search tree
 int hply;//h for history; the number of ply since the beginning of the game
 
@@ -134,9 +132,9 @@ int pv_length[MAX_PLY];
 BOOL follow_pv;
 
 /* random numbers used to compute hash; see set_hash() in board.c */
-int hash_piece[2][6][64];  /* indexed by piece [color][type][square] */
-int hash_side;
-int hash_ep[64];
+U64 hash_piece[2][6][64];  /* indexed by piece [color][type][square] */
+U64 hash_side;
+U64 hash_ep[64];
 
 int mailbox[120] = {
 	 -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -164,9 +162,9 @@ int mailbox64[64] = {
 	91, 92, 93, 94, 95, 96, 97, 98
 };
 
-BOOL slide[6] = {FALSE, FALSE, TRUE, TRUE, TRUE, FALSE};
+BOOL slide[6] = { FALSE, FALSE, TRUE, TRUE, TRUE, FALSE };
 
-int offsets[6] = {0, 8, 4, 4, 8, 8};
+int offsets[6] = { 0, 8, 4, 4, 8, 8 };
 
 int offset[6][8] = {
 	{ 0, 0, 0, 0, 0, 0, 0, 0 },
@@ -188,7 +186,7 @@ int castle_mask[64] = {
 	13, 15, 15, 15, 12, 15, 15, 14
 };
 
-char piece_char[6] = {'A', 'N', 'B', 'R', 'Q', 'K'};
+char piece_char[6] = { 'A', 'N', 'B', 'R', 'Q', 'K' };
 
 const char* square_name[64] = {
 "a8","b8","c8","d8","e8","f8","g8","h8",
@@ -203,7 +201,7 @@ const char* square_name[64] = {
 
 SearchInfo info;
 
-int piece_value[6] = {100, 320, 330, 500, 900, 0};
+int piece_value[6] = { 100, 320, 330, 500, 900, 0 };
 
 int pawn_pcsq[64] = {
 	  0,   0,   0,   0,   0,   0,   0,   0,
@@ -309,7 +307,7 @@ static char* ParseToken(char* string, char* token)
 	return string;
 }
 
-int eval(){
+int eval() {
 	int i;
 	int f;  /* file */
 	int value[2];  /* each side's score */
@@ -412,7 +410,7 @@ int eval(){
 	return value[DARK] - value[LIGHT];
 }
 
-int eval_light_pawn(int sq){
+int eval_light_pawn(int sq) {
 	int r;  /* the value to return */
 	int f;  /* the pawn's file */
 
@@ -686,32 +684,27 @@ void SetFen(const char* s)
 }
 
 //hash_rand() XORs some shifted random numbers together to make sure we have good coverage of all 32 bits. (rand() returns 16-bit numbers on some systems.)
-int hash_rand()
-{
-	int i;
-	int r = 0;
-
-	for (i = 0; i < 32; ++i)
-		r ^= rand() << i;
+U64 GetRand() {
+	U64 r = 0;
+	for (int i = 0; i < 8; i++)
+		r ^= ((U64)rand() << (i * 8));
 	return r;
 }
 
 //init_hash() initializes the random numbers used by set_hash()
-void InitHash()
-{
+void InitHash() {
 	int i, j, k;
-
 	srand(0);
 	for (i = 0; i < 2; ++i)
 		for (j = 0; j < 6; ++j)
 			for (k = 0; k < 64; ++k)
-				hash_piece[i][j][k] = hash_rand();
-	hash_side = hash_rand();
+				hash_piece[i][j][k] = GetRand();
+	hash_side = GetRand();
 	for (i = 0; i < 64; ++i)
-		hash_ep[i] = hash_rand();
+		hash_ep[i] = GetRand();
 }
 
-void GetHash(){
+void GetHash() {
 	int i;
 	hash = 0;
 	for (i = 0; i < 64; ++i)
@@ -1041,7 +1034,7 @@ void takeback() {
 }
 
 //makemove() makes a move. If the move is illegal, it undoes whatever it did and returns FALSE. Otherwise, it returns TRUE
-BOOL makemove(SMove um){
+BOOL makemove(SMove um) {
 
 	/* test to see if a castle move is legal and move the rook
 	   (the king is moved with the usual move code later) */
@@ -1263,7 +1256,7 @@ void sort(int from)
 	gen_dat[bi] = g;
 }
 
-int SearchQuiescence(int alpha, int beta){
+int SearchQuiescence(int alpha, int beta) {
 	int i, j, value;
 	if (CheckUp())
 		return 0;
@@ -1430,11 +1423,9 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	return alpha;
 }
 
-void SearchIterate()
-{
+void SearchIterate() {
 	int i, value;
 	ply = 0;
-
 	memset(pv, 0, sizeof(pv));
 	memset(history, 0, sizeof(history));
 	for (i = 1; i <= info.depthLimit; ++i) {
@@ -1442,7 +1433,6 @@ void SearchIterate()
 		value = SearchAlpha(-MATE, MATE, i, 1);
 		if (info.stop)
 			break;
-		//if (value > 9000 || value < -9000)break;
 	}
 	printf("bestmove %s\n", EmoToUmo(pv[0][0].sm));
 	fflush(stdout);
@@ -1581,23 +1571,23 @@ static void ParseGo(char* ptr) {
 static void UciCommand(char* command) {
 	char token[80], * ptr;
 	ptr = ParseToken(command, token);
-	if (strncmp(token, "ucinewgame",10) == 0) {}
-	else if (strncmp(token, "uci",3) == 0) {
+	if (strncmp(token, "ucinewgame", 10) == 0) {}
+	else if (strncmp(token, "uci", 3) == 0) {
 		printf("id name %s\n", NAME);
 		printf("uciok\n");
 		fflush(stdout);
 	}
-	else if (strncmp(token, "isready",7) == 0) {
+	else if (strncmp(token, "isready", 7) == 0) {
 		printf("readyok\n");
 		fflush(stdout);
 	}
-	else if (strncmp(token, "position",8) == 0)
+	else if (strncmp(token, "position", 8) == 0)
 		ParsePosition(ptr);
-	else if (strncmp(token, "go",2) == 0)
+	else if (strncmp(token, "go", 2) == 0)
 		ParseGo(ptr);
-	else if (strncmp(token, "quit",4) == 0)
+	else if (strncmp(token, "quit", 4) == 0)
 		exit(0);
-	else if (strncmp(token, "print",5) == 0)
+	else if (strncmp(token, "print", 5) == 0)
 		PrintBoard();
 }
 
