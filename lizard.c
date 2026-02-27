@@ -85,7 +85,7 @@ typedef struct {
 	int castle;
 	int ep;
 	int fifty;
-	int hash;
+	U64 hash;
 } hist_t;
 
 typedef struct {
@@ -127,7 +127,7 @@ hist_t hist_dat[HIST_STACK];
 
 /* a "triangular" PV array; for a good explanation of why a triangular
    array is needed, see "How Computers Play Chess" by Levy and Newborn. */
-UMove pv[MAX_PLY][MAX_PLY];
+UMove pv_table[MAX_PLY][MAX_PLY];
 int pv_length[MAX_PLY];
 BOOL follow_pv;
 
@@ -187,17 +187,6 @@ int castle_mask[64] = {
 };
 
 char piece_char[6] = { 'A', 'N', 'B', 'R', 'Q', 'K' };
-
-const char* square_name[64] = {
-"a8","b8","c8","d8","e8","f8","g8","h8",
-"a7","b7","c7","d7","e7","f7","g7","h7",
-"a6","b6","c6","d6","e6","f6","g6","h6",
-"a5","b5","c5","d5","e5","f5","g5","h5",
-"a4","b4","c4","d4","e4","f4","g4","h4",
-"a3","b3","c3","d3","e3","f3","g3","h3",
-"a2","b2","c2","d2","e2","f2","g2","h2",
-"a1","b1","c1","d1","e1","f1","g1","h1"
-};
 
 SearchInfo info;
 
@@ -289,16 +278,7 @@ U64 GetTimeMs() {
 #endif
 }
 
-static void ReadLine(char* str, int mc) {
-	char* ptr;
-	if (fgets(str, mc, stdin) == NULL)
-		exit(0);
-	if ((ptr = strchr(str, '\n')) != NULL)
-		*ptr = '\0';
-}
-
-static char* ParseToken(char* string, char* token)
-{
+static char* ParseToken(char* string, char* token){
 	while (*string == ' ')
 		string++;
 	while (*string != ' ' && *string != '\0')
@@ -307,11 +287,158 @@ static char* ParseToken(char* string, char* token)
 	return string;
 }
 
+int eval_light_pawn(int sq) {
+	int r;  /* the value to return */
+	int f;  /* the pawn's file */
+	r = 0;
+	f = COL(sq) + 1;
+	r += pawn_pcsq[sq];
+	/* if there's a pawn behind this one, it's doubled */
+	if (pawn_rank[LIGHT][f] > ROW(sq))
+		r -= DOUBLED_PAWN_PENALTY;
+	/* if there aren't any friendly pawns on either side of
+	   this one, it's isolated */
+	if ((pawn_rank[LIGHT][f - 1] == 0) &&
+		(pawn_rank[LIGHT][f + 1] == 0))
+		r -= ISOLATED_PAWN_PENALTY;
+	/* if it's not isolated, it might be backwards */
+	else if ((pawn_rank[LIGHT][f - 1] < ROW(sq)) &&
+		(pawn_rank[LIGHT][f + 1] < ROW(sq)))
+		r -= BACKWARDS_PAWN_PENALTY;
+	/* add a bonus if the pawn is passed */
+	if ((pawn_rank[DARK][f - 1] >= ROW(sq)) &&
+		(pawn_rank[DARK][f] >= ROW(sq)) &&
+		(pawn_rank[DARK][f + 1] >= ROW(sq)))
+		r += (7 - ROW(sq)) * PASSED_PAWN_BONUS;
+	return r;
+}
+
+int eval_dark_pawn(int sq) {
+	int r;  /* the value to return */
+	int f;  /* the pawn's file */
+	r = 0;
+	f = COL(sq) + 1;
+	r += pawn_pcsq[flip[sq]];
+	/* if there's a pawn behind this one, it's doubled */
+	if (pawn_rank[DARK][f] < ROW(sq))
+		r -= DOUBLED_PAWN_PENALTY;
+	/* if there aren't any friendly pawns on either side of
+	   this one, it's isolated */
+	if ((pawn_rank[DARK][f - 1] == 7) &&
+		(pawn_rank[DARK][f + 1] == 7))
+		r -= ISOLATED_PAWN_PENALTY;
+	/* if it's not isolated, it might be backwards */
+	else if ((pawn_rank[DARK][f - 1] > ROW(sq)) &&
+		(pawn_rank[DARK][f + 1] > ROW(sq)))
+		r -= BACKWARDS_PAWN_PENALTY;
+	/* add a bonus if the pawn is passed */
+	if ((pawn_rank[LIGHT][f - 1] <= ROW(sq)) &&
+		(pawn_rank[LIGHT][f] <= ROW(sq)) &&
+		(pawn_rank[LIGHT][f + 1] <= ROW(sq)))
+		r += ROW(sq) * PASSED_PAWN_BONUS;
+	return r;
+}
+
+//evaluates the Light King Pawn on file f
+int eval_lkp(int f) {
+	int r = 0;
+	if (pawn_rank[LIGHT][f] == 6);  /* pawn hasn't moved */
+	else if (pawn_rank[LIGHT][f] == 5)
+		r -= 10;  /* pawn moved one square */
+	else if (pawn_rank[LIGHT][f] != 0)
+		r -= 20;  /* pawn moved more than one square */
+	else
+		r -= 25;  /* no pawn on this file */
+	if (pawn_rank[DARK][f] == 7)
+		r -= 15;  /* no enemy pawn */
+	else if (pawn_rank[DARK][f] == 5)
+		r -= 10;  /* enemy pawn on the 3rd rank */
+	else if (pawn_rank[DARK][f] == 4)
+		r -= 5;   /* enemy pawn on the 4th rank */
+	return r;
+}
+
+//evaluates the Dark King Pawn on file f
+int eval_dkp(int f) {
+	int r = 0;
+	if (pawn_rank[DARK][f] == 1);
+	else if (pawn_rank[DARK][f] == 2)
+		r -= 10;
+	else if (pawn_rank[DARK][f] != 7)
+		r -= 20;
+	else
+		r -= 25;
+	if (pawn_rank[LIGHT][f] == 0)
+		r -= 15;
+	else if (pawn_rank[LIGHT][f] == 2)
+		r -= 10;
+	else if (pawn_rank[LIGHT][f] == 3)
+		r -= 5;
+	return r;
+}
+
+int eval_light_king(int sq) {
+	int r;  /* the value to return */
+	int i;
+	r = king_pcsq[sq];
+	/* if the king is castled, use a special function to evaluate the
+	   pawns on the appropriate side */
+	if (COL(sq) < 3) {
+		r += eval_lkp(1);
+		r += eval_lkp(2);
+		r += eval_lkp(3) / 2;  /* problems with pawns on the c & f files
+								  are not as severe */
+	}
+	else if (COL(sq) > 4) {
+		r += eval_lkp(8);
+		r += eval_lkp(7);
+		r += eval_lkp(6) / 2;
+	}
+	/* otherwise, just assess a penalty if there are open files near
+	   the king */
+	else {
+		for (i = COL(sq); i <= COL(sq) + 2; ++i)
+			if ((pawn_rank[LIGHT][i] == 0) &&
+				(pawn_rank[DARK][i] == 7))
+				r -= 10;
+	}
+	/* scale the king safety value according to the opponent's material;
+	   the premise is that your king safety can only be bad if the
+	   opponent has enough pieces to attack you */
+	r *= piece_mat[DARK];
+	r /= 3100;
+	return r;
+}
+
+int eval_dark_king(int sq) {
+	int r;
+	int i;
+	r = king_pcsq[flip[sq]];
+	if (COL(sq) < 3) {
+		r += eval_dkp(1);
+		r += eval_dkp(2);
+		r += eval_dkp(3) / 2;
+	}
+	else if (COL(sq) > 4) {
+		r += eval_dkp(8);
+		r += eval_dkp(7);
+		r += eval_dkp(6) / 2;
+	}
+	else {
+		for (i = COL(sq); i <= COL(sq) + 2; ++i)
+			if ((pawn_rank[LIGHT][i] == 0) &&
+				(pawn_rank[DARK][i] == 7))
+				r -= 10;
+	}
+	r *= piece_mat[LIGHT];
+	r /= 3100;
+	return r;
+}
+
 int eval() {
 	int i;
 	int f;  /* file */
 	int value[2];  /* each side's score */
-
 	/* this is the first pass: set up pawn_rank, piece_mat, and pawn_mat. */
 	for (i = 0; i < 10; ++i) {
 		pawn_rank[LIGHT][i] = 0;
@@ -410,197 +537,16 @@ int eval() {
 	return value[DARK] - value[LIGHT];
 }
 
-int eval_light_pawn(int sq) {
-	int r;  /* the value to return */
-	int f;  /* the pawn's file */
-
-	r = 0;
-	f = COL(sq) + 1;
-
-	r += pawn_pcsq[sq];
-
-	/* if there's a pawn behind this one, it's doubled */
-	if (pawn_rank[LIGHT][f] > ROW(sq))
-		r -= DOUBLED_PAWN_PENALTY;
-
-	/* if there aren't any friendly pawns on either side of
-	   this one, it's isolated */
-	if ((pawn_rank[LIGHT][f - 1] == 0) &&
-		(pawn_rank[LIGHT][f + 1] == 0))
-		r -= ISOLATED_PAWN_PENALTY;
-
-	/* if it's not isolated, it might be backwards */
-	else if ((pawn_rank[LIGHT][f - 1] < ROW(sq)) &&
-		(pawn_rank[LIGHT][f + 1] < ROW(sq)))
-		r -= BACKWARDS_PAWN_PENALTY;
-
-	/* add a bonus if the pawn is passed */
-	if ((pawn_rank[DARK][f - 1] >= ROW(sq)) &&
-		(pawn_rank[DARK][f] >= ROW(sq)) &&
-		(pawn_rank[DARK][f + 1] >= ROW(sq)))
-		r += (7 - ROW(sq)) * PASSED_PAWN_BONUS;
-
-	return r;
-}
-
-int eval_dark_pawn(int sq)
-{
-	int r;  /* the value to return */
-	int f;  /* the pawn's file */
-
-	r = 0;
-	f = COL(sq) + 1;
-
-	r += pawn_pcsq[flip[sq]];
-
-	/* if there's a pawn behind this one, it's doubled */
-	if (pawn_rank[DARK][f] < ROW(sq))
-		r -= DOUBLED_PAWN_PENALTY;
-
-	/* if there aren't any friendly pawns on either side of
-	   this one, it's isolated */
-	if ((pawn_rank[DARK][f - 1] == 7) &&
-		(pawn_rank[DARK][f + 1] == 7))
-		r -= ISOLATED_PAWN_PENALTY;
-
-	/* if it's not isolated, it might be backwards */
-	else if ((pawn_rank[DARK][f - 1] > ROW(sq)) &&
-		(pawn_rank[DARK][f + 1] > ROW(sq)))
-		r -= BACKWARDS_PAWN_PENALTY;
-
-	/* add a bonus if the pawn is passed */
-	if ((pawn_rank[LIGHT][f - 1] <= ROW(sq)) &&
-		(pawn_rank[LIGHT][f] <= ROW(sq)) &&
-		(pawn_rank[LIGHT][f + 1] <= ROW(sq)))
-		r += ROW(sq) * PASSED_PAWN_BONUS;
-
-	return r;
-}
-
-int eval_light_king(int sq)
-{
-	int r;  /* the value to return */
-	int i;
-
-	r = king_pcsq[sq];
-
-	/* if the king is castled, use a special function to evaluate the
-	   pawns on the appropriate side */
-	if (COL(sq) < 3) {
-		r += eval_lkp(1);
-		r += eval_lkp(2);
-		r += eval_lkp(3) / 2;  /* problems with pawns on the c & f files
-								  are not as severe */
-	}
-	else if (COL(sq) > 4) {
-		r += eval_lkp(8);
-		r += eval_lkp(7);
-		r += eval_lkp(6) / 2;
-	}
-
-	/* otherwise, just assess a penalty if there are open files near
-	   the king */
-	else {
-		for (i = COL(sq); i <= COL(sq) + 2; ++i)
-			if ((pawn_rank[LIGHT][i] == 0) &&
-				(pawn_rank[DARK][i] == 7))
-				r -= 10;
-	}
-
-	/* scale the king safety value according to the opponent's material;
-	   the premise is that your king safety can only be bad if the
-	   opponent has enough pieces to attack you */
-	r *= piece_mat[DARK];
-	r /= 3100;
-
-	return r;
-}
-
-//eval_lkp(f) evaluates the Light King Pawn on file f
-int eval_lkp(int f)
-{
-	int r = 0;
-
-	if (pawn_rank[LIGHT][f] == 6);  /* pawn hasn't moved */
-	else if (pawn_rank[LIGHT][f] == 5)
-		r -= 10;  /* pawn moved one square */
-	else if (pawn_rank[LIGHT][f] != 0)
-		r -= 20;  /* pawn moved more than one square */
-	else
-		r -= 25;  /* no pawn on this file */
-
-	if (pawn_rank[DARK][f] == 7)
-		r -= 15;  /* no enemy pawn */
-	else if (pawn_rank[DARK][f] == 5)
-		r -= 10;  /* enemy pawn on the 3rd rank */
-	else if (pawn_rank[DARK][f] == 4)
-		r -= 5;   /* enemy pawn on the 4th rank */
-
-	return r;
-}
-
-int eval_dark_king(int sq)
-{
-	int r;
-	int i;
-
-	r = king_pcsq[flip[sq]];
-	if (COL(sq) < 3) {
-		r += eval_dkp(1);
-		r += eval_dkp(2);
-		r += eval_dkp(3) / 2;
-	}
-	else if (COL(sq) > 4) {
-		r += eval_dkp(8);
-		r += eval_dkp(7);
-		r += eval_dkp(6) / 2;
-	}
-	else {
-		for (i = COL(sq); i <= COL(sq) + 2; ++i)
-			if ((pawn_rank[LIGHT][i] == 0) &&
-				(pawn_rank[DARK][i] == 7))
-				r -= 10;
-	}
-	r *= piece_mat[LIGHT];
-	r /= 3100;
-	return r;
-}
-
-int eval_dkp(int f)
-{
-	int r = 0;
-
-	if (pawn_rank[DARK][f] == 1);
-	else if (pawn_rank[DARK][f] == 2)
-		r -= 10;
-	else if (pawn_rank[DARK][f] != 7)
-		r -= 20;
-	else
-		r -= 25;
-
-	if (pawn_rank[LIGHT][f] == 0)
-		r -= 15;
-	else if (pawn_rank[LIGHT][f] == 2)
-		r -= 10;
-	else if (pawn_rank[LIGHT][f] == 3)
-		r -= 5;
-
-	return r;
-}
-
-void SetFen(const char* s)
-{
+void SetFen(const char* s){
 	int i;
 	int z;
 	int a = 0;
 	int sq = 0;
 	int n = (int)strlen(s);
-
 	for (i = 0; i < 64; ++i) {
 		color[i] = EMPTY;
 		piece[i] = EMPTY;
 	}
-
 	for (i = 0, z = 0; i < n && z == 0; ++i) {
 		switch (s[i]) {
 		case '1': sq += 1; break;
@@ -683,8 +629,8 @@ void SetFen(const char* s)
 	}
 }
 
-//hash_rand() XORs some shifted random numbers together to make sure we have good coverage of all 32 bits. (rand() returns 16-bit numbers on some systems.)
-U64 GetRand() {
+//XORs some shifted random numbers together to make sure we have good coverage of all 64 bits
+static U64 Rand64() {
 	U64 r = 0;
 	for (int i = 0; i < 8; i++)
 		r ^= ((U64)rand() << (i * 8));
@@ -698,13 +644,13 @@ void InitHash() {
 	for (i = 0; i < 2; ++i)
 		for (j = 0; j < 6; ++j)
 			for (k = 0; k < 64; ++k)
-				hash_piece[i][j][k] = GetRand();
-	hash_side = GetRand();
+				hash_piece[i][j][k] = Rand64();
+	hash_side = Rand64();
 	for (i = 0; i < 64; ++i)
-		hash_ep[i] = GetRand();
+		hash_ep[i] = Rand64();
 }
 
-void GetHash() {
+static void GetHash() {
 	int i;
 	hash = 0;
 	for (i = 0; i < 64; ++i)
@@ -724,17 +670,6 @@ void InitBoard(const char* s) {
 	GetHash();
 	first_move[0] = 0;
 }
-
-BOOL in_check(int s)
-{
-	int i;
-
-	for (i = 0; i < 64; ++i)
-		if (piece[i] == KING && color[i] == s)
-			return attack(i, s ^ 1);
-	return TRUE;  /* shouldn't get here */
-}
-
 
 //attack() returns TRUE if square sq is being attacked by side s and FALSE otherwise
 BOOL attack(int sq, int s)
@@ -774,6 +709,14 @@ BOOL attack(int sq, int s)
 	return FALSE;
 }
 
+BOOL in_check(int s) {
+	int i;
+	for (i = 0; i < 64; ++i)
+		if (piece[i] == KING && color[i] == s)
+			return attack(i, s ^ 1);
+	return TRUE;
+}
+
 //gen_promote() is just like gen_push(), only it puts 4 moves on the move stack, one for each possible promotion piece
 void gen_promote(int from, int to, int bits) {
 	int i;
@@ -789,10 +732,8 @@ void gen_promote(int from, int to, int bits) {
 	}
 }
 
-void gen_push(int from, int to, int bits)
-{
+void gen_push(int from, int to, int bits){
 	VMove* g;
-
 	if (bits & 16) {
 		if (side == LIGHT) {
 			if (to <= H8) {
@@ -819,13 +760,8 @@ void gen_push(int from, int to, int bits)
 }
 
 
-/* gen() generates pseudo-legal moves for the current position.
-   It scans the board to find friendly pieces and then determines
-   what squares they attack. When it finds a piece/square
-   combination, it calls gen_push to put the move on the "move
-   stack." */
-void gen()
-{
+//generates pseudo-legal moves for the current position
+void gen(){
 	int i, j, n;
 
 	/* so far, we have no moves for the current ply */
@@ -968,7 +904,6 @@ void gen_caps()
 //takeback() is very similar to makemove(), only backwards
 void takeback() {
 	SMove um;
-
 	side ^= 1;
 	xside ^= 1;
 	--ply;
@@ -1223,13 +1158,11 @@ int CheckUp() {
 	return info.stop;
 }
 
-void sort_pv()
-{
+void SortPv(){
 	int i;
-
 	follow_pv = FALSE;
 	for (i = first_move[ply]; i < first_move[ply + 1]; ++i)
-		if (gen_dat[i].um.u == pv[0][ply].u) {
+		if (gen_dat[i].um.u == pv_table[0][ply].u) {
 			follow_pv = TRUE;
 			gen_dat[i].value += 10000000;
 			return;
@@ -1237,13 +1170,11 @@ void sort_pv()
 }
 
 //searches the current ply's move list from 'from' to the end to find the move with the highest score
-void sort(int from)
-{
+void sort(int from){
 	int i;
 	int bs;  /* best score */
 	int bi;  /* best i */
 	VMove g;
-
 	bs = -1;
 	bi = from;
 	for (i = from; i < first_move[ply + 1]; ++i)
@@ -1254,6 +1185,15 @@ void sort(int from)
 	g = gen_dat[from];
 	gen_dat[from] = gen_dat[bi];
 	gen_dat[bi] = g;
+}
+
+//returns the number of times the current position has been repeated
+static int Reps() {
+	int r = 0;
+	for (int i = hply - fifty; i < hply; ++i)
+		if (hist_dat[i].hash == hash)
+			++r;
+	return r;
 }
 
 int SearchQuiescence(int alpha, int beta) {
@@ -1278,7 +1218,7 @@ int SearchQuiescence(int alpha, int beta) {
 
 	gen_caps();
 	if (follow_pv)  /* are we following the PV? */
-		sort_pv();
+		SortPv();
 
 	/* loop through the moves */
 	for (i = first_move[ply]; i < first_move[ply + 1]; ++i) {
@@ -1289,15 +1229,15 @@ int SearchQuiescence(int alpha, int beta) {
 		takeback();
 		if (info.stop)
 			return 0;
-		if (value > alpha) {
-			if (value >= beta)
-				return beta;
+		if (alpha < value) {
 			alpha = value;
+			if (alpha >= beta)
+				return beta;
 
 			/* update the PV */
-			pv[ply][ply] = gen_dat[i].um;
+			pv_table[ply][ply] = gen_dat[i].um;
 			for (j = ply + 1; j < pv_length[ply + 1]; ++j)
-				pv[ply][j] = pv[ply + 1][j];
+				pv_table[ply][j] = pv_table[ply + 1][j];
 			pv_length[ply] = pv_length[ply + 1];
 		}
 	}
@@ -1312,7 +1252,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	int o_xside;
 	int o_ep;
 	int o_fifty;
-	int o_hash;
+	U64 o_hash;
 	int o_castle;
 
 	/* we're as deep as we want to be; call quiesce() to get
@@ -1377,7 +1317,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 
 	gen();
 	if (follow_pv)  /* are we following the PV? */
-		sort_pv();
+		SortPv();
 	f = FALSE;
 
 	/* loop through the moves */
@@ -1390,15 +1330,18 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 		takeback();
 		if (info.stop)
 			return 0;
-		if (value > alpha) {
+		if (alpha < value) {
 			history[(int)gen_dat[i].um.sm.from][(int)gen_dat[i].um.sm.to] += depth;
-			if (value >= beta)
-				return beta;
+
 			alpha = value;
-			pv[ply][ply] = gen_dat[i].um;
+			if (alpha >= beta)
+				return beta;
+
+			pv_table[ply][ply] = gen_dat[i].um;
 			for (j = ply + 1; j < pv_length[ply + 1]; ++j)
-				pv[ply][j] = pv[ply + 1][j];
+				pv_table[ply][j] = pv_table[ply + 1][j];
 			pv_length[ply] = pv_length[ply + 1];
+
 			if (!ply) {
 				printf("info depth %d score ", depth);
 				if (abs(value) < MATE - MAX_PLY)
@@ -1408,7 +1351,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 				printf(" time %lld", GetTimeMs() - info.timeStart);
 				printf(" nodes %lld pv", info.nodes);
 				for (j = 0; j < pv_length[0]; ++j)
-					printf(" %s", EmoToUmo(pv[0][j].sm));
+					printf(" %s", EmoToUmo(pv_table[0][j].sm));
 				printf("\n");
 			}
 		}
@@ -1426,7 +1369,8 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 void SearchIterate() {
 	int i, value;
 	ply = 0;
-	memset(pv, 0, sizeof(pv));
+	memset(pv_length, 0, sizeof(pv_length));
+	memset(pv_table, 0, sizeof(pv_table));
 	memset(history, 0, sizeof(history));
 	for (i = 1; i <= info.depthLimit; ++i) {
 		follow_pv = TRUE;
@@ -1434,18 +1378,8 @@ void SearchIterate() {
 		if (info.stop)
 			break;
 	}
-	printf("bestmove %s\n", EmoToUmo(pv[0][0].sm));
+	printf("bestmove %s\n", EmoToUmo(pv_table[0][0].sm));
 	fflush(stdout);
-}
-
-
-//returns the number of times the current position has been repeated
-int Reps() {
-	int r = 0;
-	for (int i = hply - fifty; i < hply; ++i)
-		if (hist_dat[i].hash == hash)
-			++r;
-	return r;
 }
 
 //prints the board
@@ -1587,8 +1521,7 @@ static void UciCommand(char* command) {
 		ParseGo(ptr);
 	else if (strncmp(token, "quit", 4) == 0)
 		exit(0);
-	else if (strncmp(token, "print", 5) == 0)
-		PrintBoard();
+	//else if (strncmp(token, "print", 5) == 0)PrintBoard();
 }
 
 static void UciLoop() {
