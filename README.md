@@ -13,3 +13,8 @@
     <img src="https://img.shields.io/github/v/release/Thibor/Lizard?color=blue&label=Latest%20release&style=for-the-badge">
     <img src="https://img.shields.io/github/last-commit/Thibor/Lizard?color=critical&style=for-the-badge">
 </div>
+
+## Features
+
+- board: piecetype 64 + color 64 + mailbox 10x12
+		 
