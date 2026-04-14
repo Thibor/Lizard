@@ -14,7 +14,14 @@
     <img src="https://img.shields.io/github/last-commit/Thibor/Lizard?color=critical&style=for-the-badge">
 </div>
 
+FIDE-rules-compliant chess engine
+
 ## Features
 
+- Single file
 - board: piecetype 64 + color 64 + mailbox 10x12
-		 
+- En passant
+- Underpromotions (knight, bishop, rook)
+- Threefold repetition
+- 50-move rule
+- Stalemate and checkmate reported correctly to the GUI		 

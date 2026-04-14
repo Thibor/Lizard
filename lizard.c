@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
-#include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
@@ -45,10 +43,9 @@
 #define G8				6
 #define H8				7
 #define MATE 32000
-#define MAX_TIME 60000
 #define NAME "Lizard"
 #define VERSION "2026-02-09"
-#define DEFAULT_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+#define START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 #define DOUBLED_PAWN_PENALTY		10
 #define ISOLATED_PAWN_PENALTY		20
 #define BACKWARDS_PAWN_PENALTY		8
@@ -84,7 +81,7 @@ typedef struct {
 	int capture;
 	int castle;
 	int ep;
-	int fifty;
+	int move50;
 	U64 hash;
 } hist_t;
 
@@ -107,7 +104,7 @@ int castle;  /* a bitfield with the castle permissions. if 1 is set,
 int ep;  /* the en passant square. if white moves e2e4, the en passant
 			square is set to e3, because that's where a pawn would move
 			in an en passant capture */
-int fifty;//the number of moves since a capture or pawn move, used to handle the fifty-move-draw rule
+int move50;//the number of moves since a capture or pawn move, used to handle the fifty-move-draw rule
 U64 hash;//a (more or less) unique number that corresponds to the position
 int ply;//the number of half-moves (ply) since the root of the search tree
 int hply;//h for history; the number of ply since the beginning of the game
@@ -278,7 +275,7 @@ U64 GetTimeMs() {
 #endif
 }
 
-static char* ParseToken(char* string, char* token){
+static char* ParseToken(char* string, char* token) {
 	while (*string == ' ')
 		string++;
 	while (*string != ' ' && *string != '\0')
@@ -287,7 +284,7 @@ static char* ParseToken(char* string, char* token){
 	return string;
 }
 
-int eval_light_pawn(int sq) {
+static int EvalLightPawn(int sq) {
 	int r;  /* the value to return */
 	int f;  /* the pawn's file */
 	r = 0;
@@ -313,7 +310,7 @@ int eval_light_pawn(int sq) {
 	return r;
 }
 
-int eval_dark_pawn(int sq) {
+static int EvalDarkPawn(int sq) {
 	int r;  /* the value to return */
 	int f;  /* the pawn's file */
 	r = 0;
@@ -435,7 +432,7 @@ int eval_dark_king(int sq) {
 	return r;
 }
 
-int eval() {
+int EvalPosition() {
 	int i;
 	int f;  /* file */
 	int value[2];  /* each side's score */
@@ -476,7 +473,7 @@ int eval() {
 		if (color[i] == LIGHT) {
 			switch (piece[i]) {
 			case PAWN:
-				value[LIGHT] += eval_light_pawn(i);
+				value[LIGHT] += EvalLightPawn(i);
 				break;
 			case KNIGHT:
 				value[LIGHT] += knight_pcsq[i];
@@ -505,7 +502,7 @@ int eval() {
 		else {
 			switch (piece[i]) {
 			case PAWN:
-				value[DARK] += eval_dark_pawn(i);
+				value[DARK] += EvalDarkPawn(i);
 				break;
 			case KNIGHT:
 				value[DARK] += knight_pcsq[flip[i]];
@@ -534,21 +531,22 @@ int eval() {
 	}
 	if (side == LIGHT)
 		return value[LIGHT] - value[DARK];
-	return value[DARK] - value[LIGHT];
+	return ((100 - move50) * (value[DARK] - value[LIGHT])) / 100;
 }
 
-void SetFen(const char* s){
-	int i;
-	int z;
-	int a = 0;
+void SetFen(const char* s) {
+	char ffen[256];
+	char fcolor[2];
+	char fcastle[5];
+	char fep[4];
+	sscanf(s, "%s %s %s %s %d", ffen, fcolor, fcastle, fep, &move50);
 	int sq = 0;
-	int n = (int)strlen(s);
-	for (i = 0; i < 64; ++i) {
+	for (int i = 0; i < 64; ++i) {
 		color[i] = EMPTY;
 		piece[i] = EMPTY;
 	}
-	for (i = 0, z = 0; i < n && z == 0; ++i) {
-		switch (s[i]) {
+	for (int n = 0; n < strlen(ffen); n++) {
+		switch (ffen[n]) {
 		case '1': sq += 1; break;
 		case '2': sq += 2; break;
 		case '3': sq += 3; break;
@@ -570,68 +568,36 @@ void SetFen(const char* s){
 		case 'Q': color[sq] = LIGHT; piece[sq] = QUEEN;  ++sq; break;
 		case 'K': color[sq] = LIGHT; piece[sq] = KING;   ++sq; break;
 		case '/': break;
-		default: z = 1; break;
 		}
-		a = i;
 	}
-
 	side = -1;
 	xside = -1;
-
-	++a;
-
-	for (i = a, z = 0; i < n && z == 0; ++i) {
-		switch (s[i]) {
+	for (int n = 0; n < strlen(fcolor); n++) {
+		switch (fcolor[n]) {
 		case 'w': side = LIGHT; xside = DARK; break;
 		case 'b': side = DARK; xside = LIGHT; break;
-		default: z = 1; break;
 		}
-		a = i;
 	}
 
 	castle = 0;
 
-	for (i = a + 1, z = 0; i < n && z == 0; ++i) {
-		switch (s[i]) {
+	for (int n = 0; n < strlen(fcastle); n++) {
+		switch (fcastle[n]) {
 		case 'K': castle |= 1; break;
 		case 'Q': castle |= 2; break;
 		case 'k': castle |= 4; break;
 		case 'q': castle |= 8; break;
 		case '-': break;
-		default: z = 1; break;
 		}
-		a = i;
 	}
-
 	ep = -1;
-
-	for (i = a + 1, z = 0; i < n && z == 0; ++i) {
-		switch (s[i]) {
-		case '-': break;
-		case 'a': ep = 0; break;
-		case 'b': ep = 1; break;
-		case 'c': ep = 2; break;
-		case 'd': ep = 3; break;
-		case 'e': ep = 4; break;
-		case 'f': ep = 5; break;
-		case 'g': ep = 6; break;
-		case 'h': ep = 7; break;
-		case '1': ep += 56; break;
-		case '2': ep += 48; break;
-		case '3': ep += 40; break;
-		case '4': ep += 32; break;
-		case '5': ep += 24; break;
-		case '6': ep += 16; break;
-		case '7': ep += 8; break;
-		case '8': ep += 0; break;
-		default: z = 1; break;
-		}
-	}
+	if (fep[0] != '-')
+		ep = (fep[0] - 'a') + 8 * (7 - fep[1] - '1');
 }
 
 //XORs some shifted random numbers together to make sure we have good coverage of all 64 bits
 static U64 Rand64() {
-	U64 r = 0;
+	U64 r = rand();
 	for (int i = 0; i < 8; i++)
 		r ^= ((U64)rand() << (i * 8));
 	return r;
@@ -664,7 +630,6 @@ static void GetHash() {
 
 void InitBoard(const char* s) {
 	SetFen(s);
-	fifty = 0;
 	ply = 0;
 	hply = 0;
 	GetHash();
@@ -732,7 +697,7 @@ void gen_promote(int from, int to, int bits) {
 	}
 }
 
-void gen_push(int from, int to, int bits){
+void gen_push(int from, int to, int bits) {
 	VMove* g;
 	if (bits & 16) {
 		if (side == LIGHT) {
@@ -761,7 +726,7 @@ void gen_push(int from, int to, int bits){
 
 
 //generates pseudo-legal moves for the current position
-void gen(){
+void gen() {
 	int i, j, n;
 
 	/* so far, we have no moves for the current ply */
@@ -911,7 +876,7 @@ void takeback() {
 	um = hist_dat[hply].um.sm;
 	castle = hist_dat[hply].castle;
 	ep = hist_dat[hply].ep;
-	fifty = hist_dat[hply].fifty;
+	move50 = hist_dat[hply].move50;
 	hash = hist_dat[hply].hash;
 	color[(int)um.from] = side;
 	if (um.bits & 32)
@@ -1023,7 +988,7 @@ BOOL makemove(SMove um) {
 	hist_dat[hply].capture = piece[(int)um.to];
 	hist_dat[hply].castle = castle;
 	hist_dat[hply].ep = ep;
-	hist_dat[hply].fifty = fifty;
+	hist_dat[hply].move50 = move50;
 	hist_dat[hply].hash = hash;
 	++ply;
 	++hply;
@@ -1040,9 +1005,9 @@ BOOL makemove(SMove um) {
 	else
 		ep = -1;
 	if (um.bits & 17)
-		fifty = 0;
+		move50 = 0;
 	else
-		++fifty;
+		++move50;
 
 	/* move the piece */
 	color[(int)um.to] = side;
@@ -1158,7 +1123,7 @@ int CheckUp() {
 	return info.stop;
 }
 
-void SortPv(){
+void SortPv() {
 	int i;
 	follow_pv = FALSE;
 	for (i = first_move[ply]; i < first_move[ply + 1]; ++i)
@@ -1170,7 +1135,7 @@ void SortPv(){
 }
 
 //searches the current ply's move list from 'from' to the end to find the move with the highest score
-void sort(int from){
+void sort(int from) {
 	int i;
 	int bs;  /* best score */
 	int bi;  /* best i */
@@ -1190,7 +1155,7 @@ void sort(int from){
 //returns the number of times the current position has been repeated
 static int Reps() {
 	int r = 0;
-	for (int i = hply - fifty; i < hply; ++i)
+	for (int i = hply - move50; i < hply; ++i)
 		if (hist_dat[i].hash == hash)
 			++r;
 	return r;
@@ -1205,12 +1170,12 @@ int SearchQuiescence(int alpha, int beta) {
 
 	/* are we too deep? */
 	if (ply >= MAX_PLY - 1)
-		return eval();
+		return EvalPosition();
 	if (hply >= HIST_STACK - 1)
-		return eval();
+		return EvalPosition();
 
 	/* check with the evaluation function */
-	value = eval();
+	value = EvalPosition();
 	if (value >= beta)
 		return beta;
 	if (value > alpha)
@@ -1246,7 +1211,6 @@ int SearchQuiescence(int alpha, int beta) {
 
 int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	int i, j; //x;
-	BOOL c, f;
 	int nullmat;
 	int o_side;
 	int o_xside;
@@ -1255,9 +1219,10 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	U64 o_hash;
 	int o_castle;
 
-	/* we're as deep as we want to be; call quiesce() to get
-	   a reasonable score and return it. */
-	if (!depth)
+	BOOL inCheck = in_check(side);
+	if (inCheck)
+		++depth;
+	if (depth < 1)
 		return SearchQuiescence(alpha, beta);
 	if (CheckUp())
 		return 0;
@@ -1267,22 +1232,18 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	   to pick a move and can't simply return 0) then check to
 	   see if the position is a repeat. if so, we can assume that
 	   this line is a draw and return 0. */
-	if (ply && Reps())
-		return 0;
+	if (ply)
+		if (move50 >= 100 || Reps())
+			return 0;
 
 	/* are we too deep? */
 	if (ply >= MAX_PLY - 1)
-		return eval();
+		return EvalPosition();
 	if (hply >= HIST_STACK - 1)
-		return eval();
-
-	/* are we in check? if so, we want to search deeper */
-	c = in_check(side);
-	if (c)
-		++depth;
+		return EvalPosition();
 
 	/* null move */
-	if (null_move && !c && ply) {
+	if (null_move && !inCheck && ply) {
 		nullmat = 0;
 		for (i = 0; i < 64; ++i) {
 			if (piece[i] != EMPTY && piece[i] != PAWN && color[i] == side) {
@@ -1293,18 +1254,18 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 			o_side = side;
 			o_xside = xside;
 			o_ep = ep;
-			o_fifty = fifty;
+			o_fifty = move50;
 			o_hash = hash;
 			o_castle = castle;
 			ep = -1;
-			fifty = 0;
+			move50 = 0;
 			side = xside;
 			xside = o_side;
 			int value = -SearchAlpha(-beta, -beta + 1, depth - 1 - RDEPTH(nullmat), 0);
 			side = o_side;
 			xside = o_xside;
 			ep = o_ep;
-			fifty = o_fifty;
+			move50 = o_fifty;
 			hash = o_hash;
 			castle = o_castle;
 			if (info.stop) {
@@ -1318,18 +1279,18 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	gen();
 	if (follow_pv)  /* are we following the PV? */
 		SortPv();
-	f = FALSE;
+	int legalMoves = 0;
 
 	/* loop through the moves */
 	for (i = first_move[ply]; i < first_move[ply + 1]; ++i) {
 		sort(i);
 		if (!makemove(gen_dat[i].um.sm))
 			continue;
-		f = TRUE;
 		int value = -SearchAlpha(-beta, -alpha, depth - 1, 1);
 		takeback();
 		if (info.stop)
 			return 0;
+		legalMoves++;
 		if (alpha < value) {
 			history[(int)gen_dat[i].um.sm.from][(int)gen_dat[i].um.sm.to] += depth;
 
@@ -1356,13 +1317,8 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 			}
 		}
 	}
-	if (!f)
-		if (c)
-			return ply - MATE;
-		else
-			return 0;
-	if (fifty >= 100)
-		return 0;
+	if (!legalMoves)
+		return inCheck ? ply - MATE : 0;
 	return alpha;
 }
 
@@ -1428,7 +1384,7 @@ static void ParsePosition(char* ptr) {
 	}
 	else {
 		ptr = ParseToken(ptr, token);
-		InitBoard(DEFAULT_FEN);
+		InitBoard(START_FEN);
 	}
 	ply = 0;
 	gen();
@@ -1521,7 +1477,8 @@ static void UciCommand(char* command) {
 		ParseGo(ptr);
 	else if (strncmp(token, "quit", 4) == 0)
 		exit(0);
-	//else if (strncmp(token, "print", 5) == 0)PrintBoard();
+	else if (strncmp(token, "print", 5) == 0)
+		PrintBoard();
 }
 
 static void UciLoop() {
@@ -1533,7 +1490,7 @@ static void UciLoop() {
 int main() {
 	printf("%s %s\n", NAME, VERSION);
 	InitHash();
-	InitBoard(DEFAULT_FEN);
+	InitBoard(START_FEN);
 	UciLoop();
 	return 0;
 }
