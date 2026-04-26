@@ -1113,7 +1113,7 @@ int ParseMove(char* s) {
 }
 
 //is called once in a while during the search.
-int CheckUp() {
+static int CheckUp() {
 	if (!(++info.nodes & 0xffff)) {
 		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
 			info.stop = TRUE;
@@ -1123,7 +1123,7 @@ int CheckUp() {
 	return info.stop;
 }
 
-void SortPv() {
+static void SortPv() {
 	int i;
 	follow_pv = FALSE;
 	for (i = first_move[ply]; i < first_move[ply + 1]; ++i)
@@ -1135,7 +1135,7 @@ void SortPv() {
 }
 
 //searches the current ply's move list from 'from' to the end to find the move with the highest score
-void sort(int from) {
+static void sort(int from) {
 	int i;
 	int bs;  /* best score */
 	int bi;  /* best i */
@@ -1153,15 +1153,15 @@ void sort(int from) {
 }
 
 //returns the number of times the current position has been repeated
-static int Reps() {
-	int r = 0;
-	for (int i = hply - move50; i < hply; ++i)
-		if (hist_dat[i].hash == hash)
-			++r;
-	return r;
+static bool IsRepetition() {
+	int limit = max(0, hply - move50);
+	for (int n = hply - 4; n >= limit; n -= 2)
+		if (hist_dat[n].hash == hash)
+			return true;
+	return false;
 }
 
-int SearchQuiescence(int alpha, int beta) {
+static int SearchQuiescence(int alpha, int beta) {
 	int i, j, value;
 	if (CheckUp())
 		return 0;
@@ -1209,7 +1209,7 @@ int SearchQuiescence(int alpha, int beta) {
 	return alpha;
 }
 
-int SearchAlpha(int alpha, int beta, int depth, int null_move) {
+static int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	int i, j; //x;
 	int nullmat;
 	int o_side;
@@ -1233,7 +1233,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	   see if the position is a repeat. if so, we can assume that
 	   this line is a draw and return 0. */
 	if (ply)
-		if (move50 >= 100 || Reps())
+		if (move50 >= 100 || IsRepetition())
 			return 0;
 
 	/* are we too deep? */
@@ -1322,7 +1322,7 @@ int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	return alpha;
 }
 
-void SearchIterate() {
+static void SearchIterate() {
 	int i, value;
 	ply = 0;
 	memset(pv_length, 0, sizeof(pv_length));
@@ -1339,7 +1339,7 @@ void SearchIterate() {
 }
 
 //prints the board
-void PrintBoard() {
+static void PrintBoard() {
 	const char* s = "   +---+---+---+---+---+---+---+---+\n";
 	const char* t = "     A   B   C   D   E   F   G   H\n";
 	printf(t);
@@ -1454,7 +1454,7 @@ static void ParseGo(char* ptr) {
 	int time = side ? btime : wtime;
 	int inc = side ? binc : winc;
 	if (time)
-		info.timeLimit = min(time / movestogo + inc, time / 2);
+		info.timeLimit = max(1, min(time / movestogo + inc, time / 2));
 	SearchIterate();
 }
 
