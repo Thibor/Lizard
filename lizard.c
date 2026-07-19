@@ -17,31 +17,6 @@
 #define GEN_STACK		1120
 #define MAX_PLY			32
 #define HIST_STACK		400
-#define LIGHT			0
-#define DARK			1
-#define PAWN			0
-#define KNIGHT			1
-#define BISHOP			2
-#define ROOK			3
-#define QUEEN			4
-#define KING			5
-#define EMPTY			6
-#define A1				56
-#define B1				57
-#define C1				58
-#define D1				59
-#define E1				60
-#define F1				61
-#define G1				62
-#define H1				63
-#define A8				0
-#define B8				1
-#define C8				2
-#define D8				3
-#define E8				4
-#define F8				5
-#define G8				6
-#define H8				7
 #define MATE 32000
 #define NAME "Lizard"
 #define VERSION "2026-02-09"
@@ -56,6 +31,18 @@
 #define ROW(value)	  (value >> 3)
 #define COL(value)	  (value & 7)
 #define RDEPTH(value) ((value>1500)?(3):(2))
+enum Color {WHITE, BLACK};
+enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, EMPTY };
+enum Squares {
+	a8, b8, c8, d8, e8, f8, g8, h8,
+	a7, b7, c7, d7, e7, f7, g7, h7,
+	a6, b6, c6, d6, e6, f6, g6, h6,
+	a5, b5, c5, d5, e5, f5, g5, h5,
+	a4, b4, c4, d4, e4, f4, g4, h4,
+	a3, b3, c3, d3, e3, f3, g3, h3,
+	a2, b2, c2, d2, e2, f2, g2, h2,
+	a1, b1, c1, d1, e1, f1, g1, h1, no_sq
+};
 
 typedef struct {
 	char from;
@@ -87,6 +74,7 @@ typedef struct {
 
 typedef struct {
 	int stop;
+	int post;
 	int depthLimit;
 	U64 timeStart;
 	U64 timeLimit;
@@ -132,7 +120,6 @@ BOOL follow_pv;
 U64 hash_piece[2][6][64];  /* indexed by piece [color][type][square] */
 U64 hash_side;
 U64 hash_ep[64];
-
 int mailbox[120] = {
 	 -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 	 -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -183,7 +170,8 @@ int castle_mask[64] = {
 	13, 15, 15, 15, 12, 15, 15, 14
 };
 
-char piece_char[6] = { 'A', 'N', 'B', 'R', 'Q', 'K' };
+char pieceCharW[6] = { 'A', 'N', 'B', 'R', 'Q', 'K' };
+char pieceCharB[6] = { 'a', 'n', 'b', 'r', 'q', 'k' };
 
 SearchInfo info;
 
@@ -265,6 +253,8 @@ int pawn_rank[2][10];
 int piece_mat[2];  /* the value of a side's pieces */
 int pawn_mat[2];  /* the value of a side's pawns */
 
+void UciCommand(char* command);
+
 U64 GetTimeMs() {
 #ifdef WIN32
 	return GetTickCount64();
@@ -284,6 +274,40 @@ static char* ParseToken(char* string, char* token) {
 	return string;
 }
 
+static void ResetInfo() {
+	info.timeStart = GetTimeMs();
+	info.timeLimit = 0;
+	info.depthLimit = MAX_PLY;
+	info.nodesLimit = 0;
+	info.nodes = 0;
+	info.stop = FALSE;
+	info.post = TRUE;
+}
+
+static int InputAvailable(void) {
+	static int init = 0, pipe;
+	static HANDLE inh;
+	DWORD dw;
+	if (!init) {
+		init = 1;
+		inh = GetStdHandle(STD_INPUT_HANDLE);
+		pipe = !GetConsoleMode(inh, &dw);
+		if (!pipe) {
+			SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+			FlushConsoleInputBuffer(inh);
+		}
+	}
+	if (pipe) {
+		if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL))
+			return 1;
+		return dw > 0;
+	}
+	else {
+		GetNumberOfConsoleInputEvents(inh, &dw);
+		return dw > 1;
+	}
+}
+
 static int EvalLightPawn(int sq) {
 	int r;  /* the value to return */
 	int f;  /* the pawn's file */
@@ -291,21 +315,21 @@ static int EvalLightPawn(int sq) {
 	f = COL(sq) + 1;
 	r += pawn_pcsq[sq];
 	/* if there's a pawn behind this one, it's doubled */
-	if (pawn_rank[LIGHT][f] > ROW(sq))
+	if (pawn_rank[WHITE][f] > ROW(sq))
 		r -= DOUBLED_PAWN_PENALTY;
 	/* if there aren't any friendly pawns on either side of
 	   this one, it's isolated */
-	if ((pawn_rank[LIGHT][f - 1] == 0) &&
-		(pawn_rank[LIGHT][f + 1] == 0))
+	if ((pawn_rank[WHITE][f - 1] == 0) &&
+		(pawn_rank[WHITE][f + 1] == 0))
 		r -= ISOLATED_PAWN_PENALTY;
 	/* if it's not isolated, it might be backwards */
-	else if ((pawn_rank[LIGHT][f - 1] < ROW(sq)) &&
-		(pawn_rank[LIGHT][f + 1] < ROW(sq)))
+	else if ((pawn_rank[WHITE][f - 1] < ROW(sq)) &&
+		(pawn_rank[WHITE][f + 1] < ROW(sq)))
 		r -= BACKWARDS_PAWN_PENALTY;
 	/* add a bonus if the pawn is passed */
-	if ((pawn_rank[DARK][f - 1] >= ROW(sq)) &&
-		(pawn_rank[DARK][f] >= ROW(sq)) &&
-		(pawn_rank[DARK][f + 1] >= ROW(sq)))
+	if ((pawn_rank[BLACK][f - 1] >= ROW(sq)) &&
+		(pawn_rank[BLACK][f] >= ROW(sq)) &&
+		(pawn_rank[BLACK][f + 1] >= ROW(sq)))
 		r += (7 - ROW(sq)) * PASSED_PAWN_BONUS;
 	return r;
 }
@@ -317,21 +341,21 @@ static int EvalDarkPawn(int sq) {
 	f = COL(sq) + 1;
 	r += pawn_pcsq[flip[sq]];
 	/* if there's a pawn behind this one, it's doubled */
-	if (pawn_rank[DARK][f] < ROW(sq))
+	if (pawn_rank[BLACK][f] < ROW(sq))
 		r -= DOUBLED_PAWN_PENALTY;
 	/* if there aren't any friendly pawns on either side of
 	   this one, it's isolated */
-	if ((pawn_rank[DARK][f - 1] == 7) &&
-		(pawn_rank[DARK][f + 1] == 7))
+	if ((pawn_rank[BLACK][f - 1] == 7) &&
+		(pawn_rank[BLACK][f + 1] == 7))
 		r -= ISOLATED_PAWN_PENALTY;
 	/* if it's not isolated, it might be backwards */
-	else if ((pawn_rank[DARK][f - 1] > ROW(sq)) &&
-		(pawn_rank[DARK][f + 1] > ROW(sq)))
+	else if ((pawn_rank[BLACK][f - 1] > ROW(sq)) &&
+		(pawn_rank[BLACK][f + 1] > ROW(sq)))
 		r -= BACKWARDS_PAWN_PENALTY;
 	/* add a bonus if the pawn is passed */
-	if ((pawn_rank[LIGHT][f - 1] <= ROW(sq)) &&
-		(pawn_rank[LIGHT][f] <= ROW(sq)) &&
-		(pawn_rank[LIGHT][f + 1] <= ROW(sq)))
+	if ((pawn_rank[WHITE][f - 1] <= ROW(sq)) &&
+		(pawn_rank[WHITE][f] <= ROW(sq)) &&
+		(pawn_rank[WHITE][f + 1] <= ROW(sq)))
 		r += ROW(sq) * PASSED_PAWN_BONUS;
 	return r;
 }
@@ -339,18 +363,18 @@ static int EvalDarkPawn(int sq) {
 //evaluates the Light King Pawn on file f
 int eval_lkp(int f) {
 	int r = 0;
-	if (pawn_rank[LIGHT][f] == 6);  /* pawn hasn't moved */
-	else if (pawn_rank[LIGHT][f] == 5)
+	if (pawn_rank[WHITE][f] == 6);  /* pawn hasn't moved */
+	else if (pawn_rank[WHITE][f] == 5)
 		r -= 10;  /* pawn moved one square */
-	else if (pawn_rank[LIGHT][f] != 0)
+	else if (pawn_rank[WHITE][f] != 0)
 		r -= 20;  /* pawn moved more than one square */
 	else
 		r -= 25;  /* no pawn on this file */
-	if (pawn_rank[DARK][f] == 7)
+	if (pawn_rank[BLACK][f] == 7)
 		r -= 15;  /* no enemy pawn */
-	else if (pawn_rank[DARK][f] == 5)
+	else if (pawn_rank[BLACK][f] == 5)
 		r -= 10;  /* enemy pawn on the 3rd rank */
-	else if (pawn_rank[DARK][f] == 4)
+	else if (pawn_rank[BLACK][f] == 4)
 		r -= 5;   /* enemy pawn on the 4th rank */
 	return r;
 }
@@ -358,18 +382,18 @@ int eval_lkp(int f) {
 //evaluates the Dark King Pawn on file f
 int eval_dkp(int f) {
 	int r = 0;
-	if (pawn_rank[DARK][f] == 1);
-	else if (pawn_rank[DARK][f] == 2)
+	if (pawn_rank[BLACK][f] == 1);
+	else if (pawn_rank[BLACK][f] == 2)
 		r -= 10;
-	else if (pawn_rank[DARK][f] != 7)
+	else if (pawn_rank[BLACK][f] != 7)
 		r -= 20;
 	else
 		r -= 25;
-	if (pawn_rank[LIGHT][f] == 0)
+	if (pawn_rank[WHITE][f] == 0)
 		r -= 15;
-	else if (pawn_rank[LIGHT][f] == 2)
+	else if (pawn_rank[WHITE][f] == 2)
 		r -= 10;
-	else if (pawn_rank[LIGHT][f] == 3)
+	else if (pawn_rank[WHITE][f] == 3)
 		r -= 5;
 	return r;
 }
@@ -395,14 +419,14 @@ int eval_light_king(int sq) {
 	   the king */
 	else {
 		for (i = COL(sq); i <= COL(sq) + 2; ++i)
-			if ((pawn_rank[LIGHT][i] == 0) &&
-				(pawn_rank[DARK][i] == 7))
+			if ((pawn_rank[WHITE][i] == 0) &&
+				(pawn_rank[BLACK][i] == 7))
 				r -= 10;
 	}
 	/* scale the king safety value according to the opponent's material;
 	   the premise is that your king safety can only be bad if the
 	   opponent has enough pieces to attack you */
-	r *= piece_mat[DARK];
+	r *= piece_mat[BLACK];
 	r /= 3100;
 	return r;
 }
@@ -423,11 +447,11 @@ int eval_dark_king(int sq) {
 	}
 	else {
 		for (i = COL(sq); i <= COL(sq) + 2; ++i)
-			if ((pawn_rank[LIGHT][i] == 0) &&
-				(pawn_rank[DARK][i] == 7))
+			if ((pawn_rank[WHITE][i] == 0) &&
+				(pawn_rank[BLACK][i] == 7))
 				r -= 10;
 	}
-	r *= piece_mat[LIGHT];
+	r *= piece_mat[WHITE];
 	r /= 3100;
 	return r;
 }
@@ -435,103 +459,104 @@ int eval_dark_king(int sq) {
 int EvalPosition() {
 	int i;
 	int f;  /* file */
-	int value[2];  /* each side's score */
+	int value[2] = {0,0};  /* each side's score */
 	/* this is the first pass: set up pawn_rank, piece_mat, and pawn_mat. */
 	for (i = 0; i < 10; ++i) {
-		pawn_rank[LIGHT][i] = 0;
-		pawn_rank[DARK][i] = 7;
+		pawn_rank[WHITE][i] = 0;
+		pawn_rank[BLACK][i] = 7;
 	}
-	piece_mat[LIGHT] = 0;
-	piece_mat[DARK] = 0;
-	pawn_mat[LIGHT] = 0;
-	pawn_mat[DARK] = 0;
+	piece_mat[WHITE] = 0;
+	piece_mat[BLACK] = 0;
+	pawn_mat[WHITE] = 0;
+	pawn_mat[BLACK] = 0;
 	for (i = 0; i < 64; ++i) {
 		if (color[i] == EMPTY)
 			continue;
 		if (piece[i] == PAWN) {
 			pawn_mat[color[i]] += piece_value[PAWN];
 			f = COL(i) + 1;  /* add 1 because of the extra file in the array */
-			if (color[i] == LIGHT) {
-				if (pawn_rank[LIGHT][f] < ROW(i))
-					pawn_rank[LIGHT][f] = ROW(i);
+			if (color[i] == WHITE) {
+				if (pawn_rank[WHITE][f] < ROW(i))
+					pawn_rank[WHITE][f] = ROW(i);
 			}
 			else {
-				if (pawn_rank[DARK][f] > ROW(i))
-					pawn_rank[DARK][f] = ROW(i);
+				if (pawn_rank[BLACK][f] > ROW(i))
+					pawn_rank[BLACK][f] = ROW(i);
 			}
 		}
 		else
 			piece_mat[color[i]] += piece_value[piece[i]];
 	}
 
-	/* this is the second pass: evaluate each piece */
-	value[LIGHT] = piece_mat[LIGHT] + pawn_mat[LIGHT];
-	value[DARK] = piece_mat[DARK] + pawn_mat[DARK];
+	value[WHITE] = piece_mat[WHITE] + pawn_mat[WHITE];
+	value[BLACK] = piece_mat[BLACK] + pawn_mat[BLACK];
 	for (i = 0; i < 64; ++i) {
 		if (color[i] == EMPTY)
 			continue;
-		if (color[i] == LIGHT) {
-			switch (piece[i]) {
+		int pt = piece[i];
+		if (color[i] == WHITE) {
+			switch (pt) {
 			case PAWN:
-				value[LIGHT] += EvalLightPawn(i);
+				value[WHITE] += EvalLightPawn(i);
 				break;
 			case KNIGHT:
-				value[LIGHT] += knight_pcsq[i];
+				value[WHITE] += knight_pcsq[i];
 				break;
 			case BISHOP:
-				value[LIGHT] += bishop_pcsq[i];
+				value[WHITE] += bishop_pcsq[i];
 				break;
 			case ROOK:
-				if (pawn_rank[LIGHT][COL(i) + 1] == 0) {
-					if (pawn_rank[DARK][COL(i) + 1] == 7)
-						value[LIGHT] += ROOK_OPEN_FILE_BONUS;
+				if (pawn_rank[WHITE][COL(i) + 1] == 0) {
+					if (pawn_rank[BLACK][COL(i) + 1] == 7)
+						value[WHITE] += ROOK_OPEN_FILE_BONUS;
 					else
-						value[LIGHT] += ROOK_SEMI_OPEN_FILE_BONUS;
+						value[WHITE] += ROOK_SEMI_OPEN_FILE_BONUS;
 				}
 				if (ROW(i) == 1)
-					value[LIGHT] += ROOK_ON_SEVENTH_BONUS;
+					value[WHITE] += ROOK_ON_SEVENTH_BONUS;
 				break;
 			case KING:
-				if (piece_mat[DARK] <= 1200)
-					value[LIGHT] += king_endgame_pcsq[i];
+				if (piece_mat[BLACK] <= 1200)
+					value[WHITE] += king_endgame_pcsq[i];
 				else
-					value[LIGHT] += eval_light_king(i);
+					value[WHITE] += eval_light_king(i);
 				break;
 			}
 		}
 		else {
-			switch (piece[i]) {
+			switch (pt) {
 			case PAWN:
-				value[DARK] += EvalDarkPawn(i);
+				value[BLACK] += EvalDarkPawn(i);
 				break;
 			case KNIGHT:
-				value[DARK] += knight_pcsq[flip[i]];
+				value[BLACK] += knight_pcsq[flip[i]];
 				break;
 			case BISHOP:
-				value[DARK] += bishop_pcsq[flip[i]];
+				value[BLACK] += bishop_pcsq[flip[i]];
 				break;
 			case ROOK:
-				if (pawn_rank[DARK][COL(i) + 1] == 7) {
-					if (pawn_rank[LIGHT][COL(i) + 1] == 0)
-						value[DARK] += ROOK_OPEN_FILE_BONUS;
+				if (pawn_rank[BLACK][COL(i) + 1] == 7) {
+					if (pawn_rank[WHITE][COL(i) + 1] == 0)
+						value[BLACK] += ROOK_OPEN_FILE_BONUS;
 					else
-						value[DARK] += ROOK_SEMI_OPEN_FILE_BONUS;
+						value[BLACK] += ROOK_SEMI_OPEN_FILE_BONUS;
 				}
 				if (ROW(i) == 6)
-					value[DARK] += ROOK_ON_SEVENTH_BONUS;
+					value[BLACK] += ROOK_ON_SEVENTH_BONUS;
 				break;
 			case KING:
-				if (piece_mat[LIGHT] <= 1200)
-					value[DARK] += king_endgame_pcsq[flip[i]];
+				if (piece_mat[WHITE] <= 1200)
+					value[BLACK] += king_endgame_pcsq[flip[i]];
 				else
-					value[DARK] += eval_dark_king(i);
+					value[BLACK] += eval_dark_king(i);
 				break;
 			}
 		}
 	}
-	if (side == LIGHT)
-		return value[LIGHT] - value[DARK];
-	return ((100 - move50) * (value[DARK] - value[LIGHT])) / 100;
+	int score = value[WHITE] - value[BLACK];
+	if (side == BLACK)
+		score = -score;
+	return ((100 - move50) * score) / 100;
 }
 
 void SetFen(const char* s) {
@@ -555,18 +580,18 @@ void SetFen(const char* s) {
 		case '6': sq += 6; break;
 		case '7': sq += 7; break;
 		case '8': sq += 8; break;
-		case 'p': color[sq] = DARK; piece[sq] = PAWN;   ++sq; break;
-		case 'n': color[sq] = DARK; piece[sq] = KNIGHT; ++sq; break;
-		case 'b': color[sq] = DARK; piece[sq] = BISHOP; ++sq; break;
-		case 'r': color[sq] = DARK; piece[sq] = ROOK;   ++sq; break;
-		case 'q': color[sq] = DARK; piece[sq] = QUEEN;  ++sq; break;
-		case 'k': color[sq] = DARK; piece[sq] = KING;   ++sq; break;
-		case 'P': color[sq] = LIGHT; piece[sq] = PAWN;   ++sq; break;
-		case 'N': color[sq] = LIGHT; piece[sq] = KNIGHT; ++sq; break;
-		case 'B': color[sq] = LIGHT; piece[sq] = BISHOP; ++sq; break;
-		case 'R': color[sq] = LIGHT; piece[sq] = ROOK;   ++sq; break;
-		case 'Q': color[sq] = LIGHT; piece[sq] = QUEEN;  ++sq; break;
-		case 'K': color[sq] = LIGHT; piece[sq] = KING;   ++sq; break;
+		case 'p': color[sq] = BLACK; piece[sq] = PAWN;   ++sq; break;
+		case 'n': color[sq] = BLACK; piece[sq] = KNIGHT; ++sq; break;
+		case 'b': color[sq] = BLACK; piece[sq] = BISHOP; ++sq; break;
+		case 'r': color[sq] = BLACK; piece[sq] = ROOK;   ++sq; break;
+		case 'q': color[sq] = BLACK; piece[sq] = QUEEN;  ++sq; break;
+		case 'k': color[sq] = BLACK; piece[sq] = KING;   ++sq; break;
+		case 'P': color[sq] = WHITE; piece[sq] = PAWN;   ++sq; break;
+		case 'N': color[sq] = WHITE; piece[sq] = KNIGHT; ++sq; break;
+		case 'B': color[sq] = WHITE; piece[sq] = BISHOP; ++sq; break;
+		case 'R': color[sq] = WHITE; piece[sq] = ROOK;   ++sq; break;
+		case 'Q': color[sq] = WHITE; piece[sq] = QUEEN;  ++sq; break;
+		case 'K': color[sq] = WHITE; piece[sq] = KING;   ++sq; break;
 		case '/': break;
 		}
 	}
@@ -574,8 +599,8 @@ void SetFen(const char* s) {
 	xside = -1;
 	for (int n = 0; n < strlen(fcolor); n++) {
 		switch (fcolor[n]) {
-		case 'w': side = LIGHT; xside = DARK; break;
-		case 'b': side = DARK; xside = LIGHT; break;
+		case 'w': side = WHITE; xside = BLACK; break;
+		case 'b': side = BLACK; xside = WHITE; break;
 		}
 	}
 
@@ -604,7 +629,7 @@ static U64 Rand64() {
 }
 
 //init_hash() initializes the random numbers used by set_hash()
-void InitHash() {
+static void InitHash() {
 	int i, j, k;
 	srand(0);
 	for (i = 0; i < 2; ++i)
@@ -622,7 +647,7 @@ static void GetHash() {
 	for (i = 0; i < 64; ++i)
 		if (color[i] != EMPTY)
 			hash ^= hash_piece[color[i]][piece[i]][i];
-	if (side == DARK)
+	if (side == BLACK)
 		hash ^= hash_side;
 	if (ep != -1)
 		hash ^= hash_ep[ep];
@@ -644,7 +669,7 @@ BOOL attack(int sq, int s)
 	for (i = 0; i < 64; ++i)
 		if (color[i] == s) {
 			if (piece[i] == PAWN) {
-				if (s == LIGHT) {
+				if (s == WHITE) {
 					if (COL(i) != 0 && i - 9 == sq)
 						return TRUE;
 					if (COL(i) != 7 && i - 7 == sq)
@@ -700,14 +725,14 @@ void gen_promote(int from, int to, int bits) {
 void gen_push(int from, int to, int bits) {
 	VMove* g;
 	if (bits & 16) {
-		if (side == LIGHT) {
-			if (to <= H8) {
+		if (side == WHITE) {
+			if (to <= h8) {
 				gen_promote(from, to, bits);
 				return;
 			}
 		}
 		else {
-			if (to >= A1) {
+			if (to >= a1) {
 				gen_promote(from, to, bits);
 				return;
 			}
@@ -735,10 +760,10 @@ void gen() {
 	for (i = 0; i < 64; ++i)
 		if (color[i] == side) {
 			if (piece[i] == PAWN) {
-				if (side == LIGHT) {
-					if (COL(i) != 0 && color[i - 9] == DARK)
+				if (side == WHITE) {
+					if (COL(i) != 0 && color[i - 9] == BLACK)
 						gen_push(i, i - 9, 17);
-					if (COL(i) != 7 && color[i - 7] == DARK)
+					if (COL(i) != 7 && color[i - 7] == BLACK)
 						gen_push(i, i - 7, 17);
 					if (color[i - 8] == EMPTY) {
 						gen_push(i, i - 8, 16);
@@ -747,9 +772,9 @@ void gen() {
 					}
 				}
 				else {
-					if (COL(i) != 0 && color[i + 7] == LIGHT)
+					if (COL(i) != 0 && color[i + 7] == WHITE)
 						gen_push(i, i + 7, 17);
-					if (COL(i) != 7 && color[i + 9] == LIGHT)
+					if (COL(i) != 7 && color[i + 9] == WHITE)
 						gen_push(i, i + 9, 17);
 					if (color[i + 8] == EMPTY) {
 						gen_push(i, i + 8, 16);
@@ -776,31 +801,31 @@ void gen() {
 		}
 
 	/* generate castle moves */
-	if (side == LIGHT) {
+	if (side == WHITE) {
 		if (castle & 1)
-			gen_push(E1, G1, 2);
+			gen_push(e1, g1, 2);
 		if (castle & 2)
-			gen_push(E1, C1, 2);
+			gen_push(e1, c1, 2);
 	}
 	else {
 		if (castle & 4)
-			gen_push(E8, G8, 2);
+			gen_push(e8, g8, 2);
 		if (castle & 8)
-			gen_push(E8, C8, 2);
+			gen_push(e8, c8, 2);
 	}
 
 	/* generate en passant moves */
 	if (ep != -1) {
-		if (side == LIGHT) {
-			if (COL(ep) != 0 && color[ep + 7] == LIGHT && piece[ep + 7] == PAWN)
+		if (side == WHITE) {
+			if (COL(ep) != 0 && color[ep + 7] == WHITE && piece[ep + 7] == PAWN)
 				gen_push(ep + 7, ep, 21);
-			if (COL(ep) != 7 && color[ep + 9] == LIGHT && piece[ep + 9] == PAWN)
+			if (COL(ep) != 7 && color[ep + 9] == WHITE && piece[ep + 9] == PAWN)
 				gen_push(ep + 9, ep, 21);
 		}
 		else {
-			if (COL(ep) != 0 && color[ep - 9] == DARK && piece[ep - 9] == PAWN)
+			if (COL(ep) != 0 && color[ep - 9] == BLACK && piece[ep - 9] == PAWN)
 				gen_push(ep - 9, ep, 21);
-			if (COL(ep) != 7 && color[ep - 7] == DARK && piece[ep - 7] == PAWN)
+			if (COL(ep) != 7 && color[ep - 7] == BLACK && piece[ep - 7] == PAWN)
 				gen_push(ep - 7, ep, 21);
 		}
 	}
@@ -810,7 +835,7 @@ void gen() {
 /* gen_caps() is basically a copy of gen() that's modified to
    only generate capture and promote moves. It's used by the
    quiescence search. */
-void gen_caps()
+static void gen_caps()
 {
 	int i, j, n;
 
@@ -818,18 +843,18 @@ void gen_caps()
 	for (i = 0; i < 64; ++i)
 		if (color[i] == side) {
 			if (piece[i] == PAWN) {
-				if (side == LIGHT) {
-					if (COL(i) != 0 && color[i - 9] == DARK)
+				if (side == WHITE) {
+					if (COL(i) != 0 && color[i - 9] == BLACK)
 						gen_push(i, i - 9, 17);
-					if (COL(i) != 7 && color[i - 7] == DARK)
+					if (COL(i) != 7 && color[i - 7] == BLACK)
 						gen_push(i, i - 7, 17);
 					if (i <= 15 && color[i - 8] == EMPTY)
 						gen_push(i, i - 8, 16);
 				}
-				if (side == DARK) {
-					if (COL(i) != 0 && color[i + 7] == LIGHT)
+				if (side == BLACK) {
+					if (COL(i) != 0 && color[i + 7] == WHITE)
 						gen_push(i, i + 7, 17);
-					if (COL(i) != 7 && color[i + 9] == LIGHT)
+					if (COL(i) != 7 && color[i + 9] == WHITE)
 						gen_push(i, i + 9, 17);
 					if (i >= 48 && color[i + 8] == EMPTY)
 						gen_push(i, i + 8, 16);
@@ -851,23 +876,23 @@ void gen_caps()
 					}
 		}
 	if (ep != -1) {
-		if (side == LIGHT) {
-			if (COL(ep) != 0 && color[ep + 7] == LIGHT && piece[ep + 7] == PAWN)
+		if (side == WHITE) {
+			if (COL(ep) != 0 && color[ep + 7] == WHITE && piece[ep + 7] == PAWN)
 				gen_push(ep + 7, ep, 21);
-			if (COL(ep) != 7 && color[ep + 9] == LIGHT && piece[ep + 9] == PAWN)
+			if (COL(ep) != 7 && color[ep + 9] == WHITE && piece[ep + 9] == PAWN)
 				gen_push(ep + 9, ep, 21);
 		}
 		else {
-			if (COL(ep) != 0 && color[ep - 9] == DARK && piece[ep - 9] == PAWN)
+			if (COL(ep) != 0 && color[ep - 9] == BLACK && piece[ep - 9] == PAWN)
 				gen_push(ep - 9, ep, 21);
-			if (COL(ep) != 7 && color[ep - 7] == DARK && piece[ep - 7] == PAWN)
+			if (COL(ep) != 7 && color[ep - 7] == BLACK && piece[ep - 7] == PAWN)
 				gen_push(ep - 7, ep, 21);
 		}
 	}
 }
 
 //takeback() is very similar to makemove(), only backwards
-void takeback() {
+static void takeback() {
 	SMove um;
 	side ^= 1;
 	xside ^= 1;
@@ -896,20 +921,20 @@ void takeback() {
 
 		switch (um.to) {
 		case 62:
-			from = F1;
-			to = H1;
+			from = f1;
+			to = h1;
 			break;
 		case 58:
-			from = D1;
-			to = A1;
+			from = d1;
+			to = a1;
 			break;
 		case 6:
-			from = F8;
-			to = H8;
+			from = f8;
+			to = h8;
 			break;
 		case 2:
-			from = D8;
-			to = A8;
+			from = d8;
+			to = a8;
 			break;
 		default:  /* shouldn't get here */
 			from = -1;
@@ -922,7 +947,7 @@ void takeback() {
 		piece[from] = EMPTY;
 	}
 	if (um.bits & 4) {
-		if (side == LIGHT) {
+		if (side == WHITE) {
 			color[um.to + 8] = xside;
 			piece[um.to + 8] = PAWN;
 		}
@@ -945,32 +970,32 @@ BOOL makemove(SMove um) {
 			return FALSE;
 		switch (um.to) {
 		case 62:
-			if (color[F1] != EMPTY || color[G1] != EMPTY ||
-				attack(F1, xside) || attack(G1, xside))
+			if (color[f1] != EMPTY || color[g1] != EMPTY ||
+				attack(f1, xside) || attack(g1, xside))
 				return FALSE;
-			from = H1;
-			to = F1;
+			from = h1;
+			to = f1;
 			break;
 		case 58:
-			if (color[B1] != EMPTY || color[C1] != EMPTY || color[D1] != EMPTY ||
-				attack(C1, xside) || attack(D1, xside))
+			if (color[b1] != EMPTY || color[c1] != EMPTY || color[d1] != EMPTY ||
+				attack(c1, xside) || attack(d1, xside))
 				return FALSE;
-			from = A1;
-			to = D1;
+			from = a1;
+			to = d1;
 			break;
 		case 6:
-			if (color[F8] != EMPTY || color[G8] != EMPTY ||
-				attack(F8, xside) || attack(G8, xside))
+			if (color[f8] != EMPTY || color[g8] != EMPTY ||
+				attack(f8, xside) || attack(g8, xside))
 				return FALSE;
-			from = H8;
-			to = F8;
+			from = h8;
+			to = f8;
 			break;
 		case 2:
-			if (color[B8] != EMPTY || color[C8] != EMPTY || color[D8] != EMPTY ||
-				attack(C8, xside) || attack(D8, xside))
+			if (color[b8] != EMPTY || color[c8] != EMPTY || color[d8] != EMPTY ||
+				attack(c8, xside) || attack(d8, xside))
 				return FALSE;
-			from = A8;
-			to = D8;
+			from = a8;
+			to = d8;
 			break;
 		default:  /* shouldn't get here */
 			from = -1;
@@ -997,7 +1022,7 @@ BOOL makemove(SMove um) {
 	   fifty-move-draw variables */
 	castle &= castle_mask[(int)um.from] & castle_mask[(int)um.to];
 	if (um.bits & 8) {
-		if (side == LIGHT)
+		if (side == WHITE)
 			ep = um.to + 8;
 		else
 			ep = um.to - 8;
@@ -1020,7 +1045,7 @@ BOOL makemove(SMove um) {
 
 	/* erase the pawn if this is an en passant move */
 	if (um.bits & 4) {
-		if (side == LIGHT) {
+		if (side == WHITE) {
 			color[um.to + 8] = EMPTY;
 			piece[um.to + 8] = EMPTY;
 		}
@@ -1119,6 +1144,11 @@ static int CheckUp() {
 			info.stop = TRUE;
 		if (info.nodesLimit && info.nodes > info.nodesLimit)
 			info.stop = TRUE;
+		if (InputAvailable()) {
+			char line[4000];
+			fgets(line, sizeof(line), stdin);
+			UciCommand(line);
+		}
 	}
 	return info.stop;
 }
@@ -1322,16 +1352,17 @@ static int SearchAlpha(int alpha, int beta, int depth, int null_move) {
 	return alpha;
 }
 
-static void SearchIterate() {
-	int i, value;
+static void SearchIteratively() {
 	ply = 0;
 	memset(pv_length, 0, sizeof(pv_length));
 	memset(pv_table, 0, sizeof(pv_table));
 	memset(history, 0, sizeof(history));
-	for (i = 1; i <= info.depthLimit; ++i) {
+	for (int depth = 1; depth <= info.depthLimit; ++depth) {
 		follow_pv = TRUE;
-		value = SearchAlpha(-MATE, MATE, i, 1);
+		SearchAlpha(-MATE, MATE, depth, 1);
 		if (info.stop)
+			break;
+		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit / 2)
 			break;
 	}
 	printf("bestmove %s\n", EmoToUmo(pv_table[0][0].sm));
@@ -1352,11 +1383,11 @@ static void PrintBoard() {
 			case EMPTY:
 				printf("   |");
 				break;
-			case LIGHT:
-				printf(" %c |", piece_char[piece[i]]);
+			case WHITE:
+				printf(" %c |", pieceCharW[piece[i]]);
 				break;
-			case DARK:
-				printf(" %c |", piece_char[piece[i]] + ('a' - 'A'));
+			case BLACK:
+				printf(" %c |", pieceCharB[piece[i]]);
 				break;
 			}
 		}
@@ -1365,7 +1396,6 @@ static void PrintBoard() {
 	printf(s);
 	printf(t);
 }
-
 
 static void ParsePosition(char* ptr) {
 	int um;
@@ -1401,84 +1431,58 @@ static void ParsePosition(char* ptr) {
 		}
 }
 
-static void ParseGo(char* ptr) {
-	info.stop = FALSE;
-	info.nodes = 0;
-	info.depthLimit = 64;
-	info.nodesLimit = 0;
-	info.timeLimit = 0;
-	info.timeStart = GetTimeMs();
-	char token[80];
+static void ParseGo(char* command) {
+	ResetInfo();
 	int wtime = 0;
 	int btime = 0;
 	int winc = 0;
 	int binc = 0;
 	int movestogo = 32;
-	for (;;) {
-		ptr = ParseToken(ptr, token);
-		if (*token == '\0')
-			break;
-		else if (strcmp(token, "wtime") == 0) {
-			ptr = ParseToken(ptr, token);
-			wtime = atoi(token);
-		}
-		else if (strcmp(token, "btime") == 0) {
-			ptr = ParseToken(ptr, token);
-			btime = atoi(token);
-		}
-		else if (strcmp(token, "winc") == 0) {
-			ptr = ParseToken(ptr, token);
-			winc = atoi(token);
-		}
-		else if (strcmp(token, "binc") == 0) {
-			ptr = ParseToken(ptr, token);
-			binc = atoi(token);
-		}
-		else if (strcmp(token, "movestogo") == 0) {
-			ptr = ParseToken(ptr, token);
-			movestogo = atoi(token);
-		}
-		else if (strcmp(token, "movetime") == 0) {
-			ptr = ParseToken(ptr, token);
-			info.timeLimit = atoi(token);
-		}
-		else if (strcmp(token, "depth") == 0) {
-			ptr = ParseToken(ptr, token);
-			info.depthLimit = atoi(token);
-		}
-		else if (strcmp(token, "nodes") == 0) {
-			ptr = ParseToken(ptr, token);
-			info.nodesLimit = atoi(token);
-		}
-	}
+	char* argument = NULL;
+	if (argument = strstr(command, "binc"))
+		binc = atoi(argument + 5);
+	if (argument = strstr(command, "winc"))
+		winc = atoi(argument + 5);
+	if (argument = strstr(command, "wtime"))
+		wtime = atoi(argument + 6);
+	if (argument = strstr(command, "btime"))
+		btime = atoi(argument + 6);
+	if ((argument = strstr(command, "movestogo")))
+		movestogo = atoi(argument + 10);
+	if ((argument = strstr(command, "movetime")))
+		info.timeLimit = atoi(argument + 9);
+	if ((argument = strstr(command, "depth")))
+		info.depthLimit = atoi(argument + 6);
+	if (argument = strstr(command, "nodes"))
+		info.nodesLimit = atoi(argument + 5);
 	int time = side ? btime : wtime;
 	int inc = side ? binc : winc;
 	if (time)
 		info.timeLimit = max(1, min(time / movestogo + inc, time / 2));
-	SearchIterate();
+	SearchIteratively();
 }
 
-static void UciCommand(char* command) {
-	char token[80], * ptr;
-	ptr = ParseToken(command, token);
-	if (strncmp(token, "ucinewgame", 10) == 0) {}
-	else if (strncmp(token, "uci", 3) == 0) {
+void UciCommand(char* line) {
+	if (!strncmp(line, "ucinewgame", 10)) {}
+	else if (!strncmp(line, "uci", 3)) {
 		printf("id name %s\n", NAME);
 		printf("uciok\n");
 		fflush(stdout);
 	}
-	else if (strncmp(token, "isready", 7) == 0) {
+	else if (!strncmp(line, "isready", 7)) {
 		printf("readyok\n");
 		fflush(stdout);
 	}
-	else if (strncmp(token, "position", 8) == 0)
-		ParsePosition(ptr);
-	else if (strncmp(token, "go", 2) == 0)
-		ParseGo(ptr);
-	else if (strncmp(token, "quit", 4) == 0)
-		exit(0);
-	else if (strncmp(token, "print", 5) == 0)
+	else if (!strncmp(line, "position", 8))
+		ParsePosition(line + 9);
+	else if (!strncmp(line, "go", 2))
+		ParseGo(line + 3);
+	else if (!strncmp(line, "print", 5))
 		PrintBoard();
+	else if (!strncmp(line, "stop", 4))
+		info.stop = TRUE;
+	else if (!strncmp(line, "quit", 4))
+		exit(0);
 }
 
 static void UciLoop() {
